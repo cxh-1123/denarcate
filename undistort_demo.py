@@ -22,6 +22,30 @@ def warp_magnitude_bgr(map1, map2, w: int, h: int) -> np.ndarray:
     return cv2.applyColorMap(norm, cv2.COLORMAP_INFERNO), mmax
 
 
+def draw_displacement_arrows(
+    bgr: np.ndarray,
+    map1,
+    map2,
+    step: int = 48,
+    scale: float = 1.0,
+    color: tuple[int, int, int] = (0, 255, 255),
+) -> np.ndarray:
+    """在规则网格上绘制采样位移箭头（方向=采样方向，长度=位移大小）。"""
+    out = bgr.copy()
+    map1f, map2f = cv2.convertMaps(map1, map2, cv2.CV_32FC1)
+    h, w = out.shape[:2]
+    for y in range(step // 2, h, step):
+        for x in range(step // 2, w, step):
+            sx = float(map1f[y, x])
+            sy = float(map2f[y, x])
+            dx = (sx - x) * scale
+            dy = (sy - y) * scale
+            p0 = (int(x), int(y))
+            p1 = (int(round(x + dx)), int(round(y + dy)))
+            cv2.arrowedLine(out, p0, p1, color, 1, cv2.LINE_AA, tipLength=0.25)
+    return out
+
+
 CHESSBOARD_FLAGS = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
 SUBPIX_CRITERIA = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, 0.001)
 
@@ -151,6 +175,24 @@ def overlay_chessboard_reference_lines(
             cv2.line(bgr, q1, q2, col, 2, cv2.LINE_AA)
     draw_parallel_families(bgr, center, dr, (0, 220, 255), step_r)
     draw_parallel_families(bgr, center, dc, (0, 140, 255), step_c)
+
+
+def draw_chessboard_lines(
+    bgr: np.ndarray,
+    corners: np.ndarray,
+    pattern_size: Tuple[int, int],
+    color: tuple[int, int, int],
+    thickness: int = 1,
+) -> None:
+    """按行列连接棋盘角点，直观看行列线形状。"""
+    pts = _corners_xy(corners)
+    nw, nh = pattern_size
+    for r in range(nh):
+        row = pts[r * nw : (r + 1) * nw].astype(np.int32)
+        cv2.polylines(bgr, [row.reshape(-1, 1, 2)], False, color, thickness, cv2.LINE_AA)
+    for c in range(nw):
+        col = pts[c::nw].astype(np.int32)
+        cv2.polylines(bgr, [col.reshape(-1, 1, 2)], False, color, thickness, cv2.LINE_AA)
 
 
 def corner_zoom_strip(
@@ -372,6 +414,23 @@ def main() -> None:
             cv2.imwrite("undistort_grid_lines.jpg", grid_cmp)
             print("  已保存 undistort_grid_lines.jpg（左原图 / 右去畸变，叠加与棋盘边平行的线族）")
 
+            # 双色叠加：原图角点线(橙) + 去畸变角点线(青)
+            board_overlay = cv2.addWeighted(img, 0.65, undistorted, 0.35, 0)
+            draw_chessboard_lines(board_overlay, co, pattern_size, (0, 165, 255), 1)
+            draw_chessboard_lines(board_overlay, cu, pattern_size, (255, 255, 0), 1)
+            cv2.putText(
+                board_overlay,
+                "orange=orig board lines, cyan=undistorted board lines",
+                (10, 28),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.62,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.imwrite("undistort_board_lines_overlay.jpg", board_overlay)
+            print("  已保存 undistort_board_lines_overlay.jpg（橙=原图角点线，青=去畸变角点线）")
+
     if not args.no_compare:
         # 缩放到同高并排，便于肉眼看直线/边缘
         target_h = min(h, 720)
@@ -418,11 +477,24 @@ def main() -> None:
             cv2.LINE_AA,
         )
         cv2.imwrite("undistort_warp_heatmap.jpg", warp_vis)
+        arrows = draw_displacement_arrows(img, map1, map2, step=48, scale=1.0, color=(0, 255, 255))
+        cv2.putText(
+            arrows,
+            "displacement arrows: dir=sampling direction, len=shift",
+            (12, 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.62,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.imwrite("undistort_displacement_arrows.jpg", arrows)
         blend = cv2.addWeighted(img, 0.5, undistorted, 0.5, 0)
         cv2.imwrite("undistort_blend50.jpg", blend)
         zoom_strip = corner_zoom_strip(img, undistorted)
         cv2.imwrite("undistort_corner_zoom.jpg", zoom_strip)
         print("  undistort_warp_heatmap.jpg（畸变校正时像素采样偏移，边角颜色更亮=形变更大）")
+        print("  undistort_displacement_arrows.jpg（网格箭头：方向=采样方向，长度=位移像素）")
         print("  undistort_blend50.jpg（原图与去畸变 50% 叠影，重影处=几何不一致）")
         print("  undistort_corner_zoom.jpg（四角+中心放大：直墙/棋盘线更易对比）")
         print(
